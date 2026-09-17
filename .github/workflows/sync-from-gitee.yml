@@ -1,0 +1,27 @@
+# Gitee -> GitHub 单向镜像同步
+# 源仓库（唯一事实源）：https://gitee.com/goddog312/rom-hamster
+# 每 30 分钟轮询一次（GitHub 计划任务可能有几分钟延迟），也可在 Actions 页面手动 Run。
+name: Sync from Gitee
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror Gitee -> GitHub
+        run: |
+          set -eux
+          git clone --mirror https://gitee.com/goddog312/rom-hamster.git upstream.git
+          cd upstream.git
+          git remote add github "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # --mirror 会同步所有分支/标签并强制对齐源仓库
+          git push --mirror --prune github
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
