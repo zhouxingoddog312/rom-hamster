@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+#
+# rom-hamster - 游戏 ROM 收集 / 整理 / 元数据 / 资源全生命周期管理工具
+# 纯 Bash 实现，兼容 Debian/Ubuntu（deb 安装）与 macOS / 源码树运行。
+#
+# 仅做补丁文件的存储 / 关联 / 管理，绝不自动打补丁或安装补丁。
+# License: MIT
+#
+VERSION="1.0.0"
+
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# 安装路径 / 源码树路径自适应（FHS）
+# ---------------------------------------------------------------------------
+_self_path() {
+  # 兼容 macOS（无 readlink -f）
+  local p=$0
+  if command -v readlink >/dev/null 2>&1 && readlink -f "$p" >/dev/null 2>&1; then
+    readlink -f "$p"
+  else
+    local d
+    d=$(cd "$(dirname "$p")" && pwd)
+    printf '%s/%s' "$d" "$(basename "$p")"
+  fi
+}
+SELF=$(_self_path)
+BIN_DIR=$(cd "$(dirname "$SELF")" && pwd)
+
+if [ -d /usr/lib/rom-hamster/lib ] && [ -d /usr/share/rom-hamster ]; then
+  RH_LIB_DIR=/usr/lib/rom-hamster/lib
+  RH_DATA_DIR=/usr/share/rom-hamster
+  RH_SYS_CONF=/etc/rom-hamster/rom-hamster.conf
+else
+  # 源码树：<root>/usr/bin/rom-hamster -> <root>/usr/lib/... 与 <root>/usr/share/...
+  RH_LIB_DIR="$BIN_DIR/../lib/rom-hamster/lib"
+  RH_DATA_DIR="$BIN_DIR/../share/rom-hamster"
+  RH_SYS_CONF="$BIN_DIR/../../etc/rom-hamster/rom-hamster.conf"
+fi
+[ -f "$RH_SYS_CONF" ] 2>/dev/null || RH_SYS_CONF=""
+[ -d "$RH_LIB_DIR" ] || { printf 'rom-hamster: 找不到模块库目录：%s\n' "$RH_LIB_DIR" >&2; exit 1; }
+export RH_LIB_DIR RH_DATA_DIR RH_SYS_CONF
+
+for _m in common config db ui archive dat import manage export library; do
+  # shellcheck source=/dev/null
+  . "$RH_LIB_DIR/$_m.sh"
+done
+unset _m
+
+# ---------------------------------------------------------------------------
+# 帮助
+# ---------------------------------------------------------------------------
+usage() {
+  cat <<EOF
+rom-hamster $VERSION — 游戏 ROM 收集 / 整理 / 元数据 / 资源管理（Bash + zenity）
+
+用法：
+  rom-hamster [--gui]                    打开交互菜单（加 --gui 使用图形界面）
+  rom-hamster menu [--gui]               同上
+  rom-hamster init [--root DIR] [-y]     初始化配置与存储库
+  rom-hamster import <文件/目录>... [-y]  导入（可多个；-y 非交互）
+                                       若目录含 gamelist.xml / metadata.pegasus.txt，
+                                       自动识别为 ES/ES-DE/Pegasus 整库并批量入库
+  rom-hamster list [筛选与排序]           列出游戏
+  rom-hamster search <关键词>             按名称/文件名搜索
+  rom-hamster show <ID>                  查看游戏详情
+  rom-hamster edit <ID>                  编辑游戏元数据（交互式）
+  rom-hamster delete <ID> [-y]           删除游戏（-y 跳过确认）
+  rom-hamster export <目标目录> [选项]    导出游戏库（--frontend es|esde|pegasus，默认 es）
+  rom-hamster stats                      统计概览
+  rom-hamster config                     打印当前配置与各级配置路径
+  rom-hamster help | --help | -h         本帮助
+  rom-hamster version | --version | -v   版本号
+
+list 筛选：--platform P --genre G --developer D --publisher P --year Y
+          --region R --tag T --multi true|false --status good|baddump|unknown
+          --has-patch true|false --patch-type generic|platform|mixed
+          --format raw|zip|7z|chd --kw 关键词
+          --sort name|rating|year|discs --dir asc|desc
+export 选项：--platform P（可多次） --id ID（可多次）
+          --frontend es|esde|pegasus（默认 es）
+          --media（全部媒体） --covers --screenshots --videos --marquees
+          --miximages --intro --patcher --keep-dirs
+          --no-m3u --no-hidden-discs --compress [--format zip|7z] -y
+
+配置优先级（低→高）：内置默认 → $RH_DATA_DIR/platforms.conf
+          → ${RH_SYS_CONF:-/etc/rom-hamster/rom-hamster.conf} → ~/.rom-hamster.conf → 命令行
+用户配置：$HOME/.rom-hamster.conf
+缓存目录：${XDG_CACHE_HOME:-$HOME/.cache}/rom-hamster
+存储结构：ROM_ROOT/<平台>/<游戏>/{rom,covers,screenshots,videos,marquees,miximages,intro,patcher}
+元数据库：ROM_ROOT/romhamsterdb.csv
+注意：程序仅存储/关联补丁，绝不自动打补丁或安装补丁。
+EOF
+}
+
+cmd_edit() {
+  ensure_ready
+  local id=$1
+  [ -n "$id" ] || die "用法：rom-hamster edit <ID>"
+  edit_game "$id"
+}
+
+cmd_delete() {
+  ensure_ready
+  local id="" yes=0 a
+  for a in "$@"; do
+    case "$a" in -y|--yes) yes=1 ;; *) id=$a ;; esac
+  done
+  [ -n "$id" ] || die "用法：rom-hamster delete <ID> [-y]"
+  if [ "$yes" = "1" ]; then
+    RH_FORCE=1 delete_game "$id"
+  else
+    delete_game "$id"
+  fi
+}
+
+main() {
+  local args=("$@")
+  local i
+  for i in "${!args[@]}"; do
+    case "${args[$i]}" in --gui|-g) GUI=1 ;; esac
+  done
+
+  local cmd=${1:-menu}
+  shift 2>/dev/null || true
+  case "$cmd" in
+    --gui|-g|menu)
+      for i in "$@"; do [ "$i" = "--gui" ] && GUI=1; done
+      main_menu ;;
+    gui) GUI=1; main_menu ;;
+    init) cmd_init "$@" ;;
+    import) cmd_import "$@" ;;
+    list) cmd_list "$@" ;;
+    search) cmd_search "$@" ;;
+    show) cmd_show "$@" ;;
+    edit) cmd_edit "$@" ;;
+    delete) cmd_delete "$@" ;;
+    export) cmd_export "$@" ;;
+    stats) cmd_stats ;;
+    config) cmd_config ;;
+    help|--help|-h) usage ;;
+    version|--version|-v) printf 'rom-hamster %s\n' "$VERSION" ;;
+    *) printf '未知命令：%s\n\n' "$cmd" >&2; usage >&2; exit 1 ;;
+  esac
+}
+
+_init_field_idx
+main "$@"
